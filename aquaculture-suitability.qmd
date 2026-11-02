@@ -10,9 +10,32 @@ execute:
   warning: false
 ---
 ```{r}
-# Load libraries
+#| message: false
+#| warning: false
+library(sf)          # vector handling
+library(terra)       # raster handling
 library(tidyverse)
-library(sf)
-library(here)
-library(tmap)
+library(tmap)        # map making
+library(elevatr)     # elevation data download
+library(tigris)      # US Census boundary data
+library(viridisLite)
 ```
+
+## Load data
+```{r}
+# Sea Surface Temperature data
+sst_08 <- rast('data/average_annual_sst_2008.tif')
+sst_09 <- rast('data/average_annual_sst_2009.tif')
+sst_10 <- rast('data/average_annual_sst_2010.tif')
+sst_11 <- rast('data/average_annual_sst_2011.tif')
+sst_12 <- rast('data/average_annual_sst_2012.tif')
+
+sst_rasters <- c(sst_08, sst_09, sst_10, sst_11, sst_12) #Stack rasters 
+
+# Bathymetry data
+depth <- rast('data/depth.tif')
+
+# Exclusive Economic Zones
+wc_regions <- read_sf('data/wc_regions_clean.shp')
+```
+
