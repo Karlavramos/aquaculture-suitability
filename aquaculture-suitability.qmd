@@ -9,6 +9,7 @@ execute:
   message: false
   warning: false
 ---
+## Libraries
 ```{r}
 #| message: false
 #| warning: false
@@ -21,7 +22,7 @@ library(tigris)      # US Census boundary data
 library(viridisLite)
 ```
 
-## Load data
+## Data Details & Processing
 ```{r}
 # Sea Surface Temperature data
 sst_08 <- rast('data/average_annual_sst_2008.tif')
@@ -30,8 +31,11 @@ sst_10 <- rast('data/average_annual_sst_2010.tif')
 sst_11 <- rast('data/average_annual_sst_2011.tif')
 sst_12 <- rast('data/average_annual_sst_2012.tif')
 
-sst_rasters <- c(sst_08, sst_09, sst_10, sst_11, sst_12) #Stack rasters 
+sst_raster<- (c(sst_08, sst_09, sst_10, sst_11, sst_12)) #Stack rasters 
 
+sst_mean<- mean(sst_raster, na.rm = TRUE) #Take the mean of the rasters and convert to celcius
+
+SST <- sst_mean - 273.15
 # Bathymetry data
 depth <- rast('data/depth.tif')
 
@@ -39,3 +43,148 @@ depth <- rast('data/depth.tif')
 wc_regions <- read_sf('data/wc_regions_clean.shp')
 ```
 
+```{r}
+# crop raster to extent of vector object
+depth_cropped <- crop(depth, SST)
+```
+
+```{r}
+depth_resampl <- terra::resample(depth_cropped, y = SST, method = "bilinear")
+plot(depth_resampl)
+plot(SST)
+```
+
+```{r}
+cat("=== SST ===\n")
+cat("Resolution:", res(SST), "\n")
+cat("Extent:    "); print(ext(SST))
+
+cat("\n=== Depth Resample ===\n")
+cat("Resolution:", res(depth_resampl), "\n")
+cat("Extent:    "); print(ext(depth_resampl))
+
+
+cat("\n=== Same CRS? ===\n")
+cat("SST vs Depth Resample: ", same.crs(SST, depth_resampl), "\n")
+```
+
+```{r}
+if(st_crs(SST) == st_crs(depth_resampl)){
+  print("it's a match!")
+} else {
+  print("still not a match")
+}
+SST <- project(SST, crs(depth_resampl))
+```
+
+## Find suitable locations
+
+Research has shown that oysters need the following conditions for optimal growth:
+
+    sea surface temperature: 11-30°C
+    depth: 0-70 meters below sea level
+
+```{r}
+
+# Define a reclassification matrix for temperature
+rcl_sst <- matrix(c(-Inf, 11, 0, # not suitable
+                11, 30, 1,  # suitable
+                30, Inf, 0), # not suitable
+              ncol = 3, byrow = TRUE)
+
+# Apply the matrix to reclassify the raster, making all cells 0 or 1 or 2
+sst_rcl <- terra::classify(SST, rcl = rcl_sst)
+
+# Define a reclassification matrix for temperature
+rcl_depth <- matrix(c(-Inf, 0, 0, # not suitable
+                0, 70, 1,  # suitable
+                70, Inf, 0), # not suitable
+              ncol = 3, byrow = TRUE)
+
+# Apply the matrix to reclassify the raster, making all cells 0 or 1 or 2
+depth_rcl <- terra::classify(depth_resampl, rcl = rcl_depth)
+
+combined <- c(sst_rcl, depth_rcl)
+
+suitable_zones <- lapp(combined, fun = function(SST,depth) SST * depth)
+plot(suitable_zones)
+```
+
+## Determine the most suitable EEZ
+
+```{r}
+ezz_raster <- rasterize(wc_regions, suitable_zones, field = 'rgn_id')
+plot(ezz_raster)
+
+suitable_cellsize <- cellSize(suitable_zones, unit = "km", mask = TRUE)
+
+plot(suitable_cellsize)
+
+suitable_zone_mask <- mask(suitable_cellsize, suitable_zones, maskvalues = 0)
+plot(suitable_zone_mask)
+
+zone <- zonal(suitable_zone_mask, ezz_raster, fun = "sum", na.rm = TRUE)
+
+zone_tibble <- as_tibble(zone)
+
+eez_map <- left_join(wc_regions,zone_tibble, by= 'rgn_id')
+
+tm_shape(eez_map) +
+    tm_basemap('OpenStreetMap')+
+    tm_fill(fill='area')
+```
+
+## Develop Function
+```{r}
+Species_EEZ <- function(minimum_sst,maximum_sst,minimum_depth,maximum_depth,
+species_name) {
+    rcl_sst <- matrix(c(-Inf, minimum_sst, 0, # not suitable
+                    minimum_sst, maximum_sst, 1,  # suitable
+                    maximum_sst, Inf, 0), # not suitable
+                ncol = 3, byrow = TRUE)
+
+    # Apply the matrix to reclassify the raster, making all cells 0 or 1 or 2
+    sst_rcl <- terra::classify(SST, rcl = rcl_sst)
+
+    # Define a reclassification matrix for temperature
+    rcl_depth <- matrix(c(-Inf, minimum_depth, 0, # not suitable
+                    minimum_depth, maximum_depth, 1,  # suitable
+                    maximum_depth, Inf, 0), # not suitable
+                ncol = 3, byrow = TRUE)
+
+    # Apply the matrix to reclassify the raster, making all cells 0 or 1 or 2
+    depth_rcl <- terra::classify(depth_resampl, rcl = rcl_depth)
+
+    combined <- c(sst_rcl, depth_rcl)
+
+    suitable_zones <- lapp(combined, fun = function(SST,depth) SST * depth)
+
+    ezz_raster <- rasterize(wc_regions, suitable_zones, field = 'rgn_id')
+
+    suitable_cellsize <- cellSize(suitable_zones, unit = "km", mask = TRUE)
+
+    suitable_zone_mask <- mask(suitable_cellsize, suitable_zones, maskvalues = 0)
+
+    zone <- zonal(suitable_zone_mask, ezz_raster, fun = "sum", na.rm = TRUE)
+
+    zone_tibble <- as_tibble(zone)
+
+    eez_map <- left_join(wc_regions,zone_tibble, by= 'rgn_id')
+
+    tm_shape(eez_map) +
+    tm_basemap('OpenStreetMap')+
+    tm_fill(fill='area')
+}
+```
+
+## Apply Function
+```{r}
+Species_EEZ(minimum_sst = 11, maximum_sst = 30,
+            minimum_depth = -70, maximum_depth = 0,
+            species_name = "Oysters")
+```
+```{r}
+Species_EEZ(minimum_sst = 15, maximum_sst = 30,
+            minimum_depth = -20, maximum_depth = 0,
+            species_name = "california_datemussel")
+```
